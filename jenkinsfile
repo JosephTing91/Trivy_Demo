@@ -1,0 +1,73 @@
+pipeline {
+  agent any
+  environment {
+    WORKSPACE = "${env.WORKSPACE}"
+    dockerhub=credentials('dockerhub')
+  }
+  stages {
+    stage('Clone') {
+      steps{
+        git branch: 'main', url: 'https://github.com/JosephTing91/Trivy_Demo.git'
+
+        }
+      }    
+        stage('Build image') {
+            steps {
+              dir('/var/lib/jenkins/workspace/Comprehensive_Pipeline') {
+                sh 'cp /var/lib/jenkins/workspace/Comprehensive_Pipeline/hello-world/webapp/target/*.war  /var/lib/jenkins/workspace/Comprehensive_Pipeline'
+                sh 'docker build -t joeting91/regapp:v1 .'
+              }
+            }
+        }
+        
+        stage('Scan image with Trivy') {
+            steps {
+                sh 'trivy image joeting91/regapp:v1 --no-progress --exit-code 1 --severity HIGH,CRITICAL '
+
+            }
+        }     
+
+    stage("Push to dockerhub"){
+      steps{
+        sh 'echo $dockerhub_PSW | docker login -u $dockerhub_USR --password-stdin'
+        sh 'docker push joeting91/regapp:v1'
+      }
+    }    
+        
+        stage('Deploy to dev env') {
+            environment {
+                HOSTS = 'dev'
+            }
+            options {
+                timeout(time: 480 , unit: 'SECONDS')
+            }
+            steps { 
+              script{
+                try {
+                withCredentials([usernamePassword(credentialsId: 'ansible-deploy-server-credentials', passwordVariable: 'PASSWORD', usernameVariable: 'USER_NAME')]) 
+                  { sh "ansible-playbook -i ${WORKSPACE}/aws_ec2.yaml ${WORKSPACE}/deploy.yaml --extra-vars \"ansible_user=$USER_NAME ansible_password=$PASSWORD hosts=tag_Environment_$HOSTS workspace_path=$WORKSPACE\""
+                }
+                }
+                catch (Throwable e) {
+                    echo "proceeding to next step"
+                    currentBuild.result="SUCCESS"
+                }
+              }
+            }
+        }
+        stage('DAST') {
+            steps {
+              sshagent(['zap']) {  
+                sh 'ssh -o StrictHostKeyChecking=no ubuntu@172.31.15.216 "docker run -t owasp/zap2docker-stable zap-baseline.py -t http://35.173.234.172:30001" || true '
+                  
+              }
+
+                }
+            }
+
+
+  }       
+}
+
+    
+
